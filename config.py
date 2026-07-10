@@ -4,30 +4,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Config:
-    # Telegram Bot
+    # ONLY Telegram Bot Token
     BOT_TOKEN = os.getenv('BOT_TOKEN')
     
-    # MongoDB - Optional, will use local storage if not provided
-    MONGODB_URI = os.getenv('MONGODB_URI')
-    DB_NAME = os.getenv('DB_NAME', 'infovault_ai')
+    if not BOT_TOKEN:
+        raise ValueError("BOT_TOKEN is required! Get it from @BotFather")
     
     # File Storage
-    MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
-    ALLOWED_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'mp4', 'mp3', 'wav', 'pdf', 'doc', 'docx', 'txt']
-    
-    # OCR
-    OCR_LANGUAGE = 'eng'
-    
-    # Security
-    SESSION_EXPIRY = 3600  # 1 hour
-    
-    # Pagination
-    ITEMS_PER_PAGE = 10
-    
-    # Upload Directories
     UPLOAD_DIR = 'uploads'
     PDF_DIR = 'pdfs'
     
-    # Create directories if they don't exist
+    # Create directories
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     os.makedirs(PDF_DIR, exist_ok=True)
