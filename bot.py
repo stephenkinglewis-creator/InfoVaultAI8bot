@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 def main():
     """Start the bot"""
-    # Initialize database
+    # Initialize database (will use local storage if MongoDB not available)
     db = Database(Config.MONGODB_URI, Config.DB_NAME)
     
     # Initialize utilities
@@ -77,7 +77,13 @@ def main():
     application.add_handler(CallbackQueryHandler(handlers.handle_export_callback, pattern="export_"))
     
     # Start bot
-    logger.info("Bot is starting...")
+    logger.info("🚀 Bot is starting...")
+    logger.info(f"📊 Database status: {'Connected to MongoDB' if db.connected else 'Using local storage'}")
+    
+    # Print bot info
+    bot_info = application.bot.get_me()
+    logger.info(f"🤖 Bot: @{bot_info.username}")
+    
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
