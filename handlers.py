@@ -14,7 +14,7 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 # Conversation states
-UPLOAD, ADD_TAGS, ADD_CATEGORY, SEARCH, EXPORT = range(5)
+SEARCH = 1
 
 class Handlers:
     def __init__(self, db: Database, utils: Utils):
@@ -42,22 +42,21 @@ Your personal second brain for Telegram. I'll help you store, organize, and retr
 • Extract text from images using OCR
 • Generate summaries of long documents
 • Convert images to PDF
-• Search your stored information using keywords or AI
+• Search your stored information using keywords
 • Organize content by categories and tags
-• Export your data in multiple formats
+• Export your data in JSON or TXT format
 
 🔍 **Commands:**
 /start - Show this welcome message
 /help - Show help menu
-/store - Save current message to your vault
-/search - Search your vault using keywords or AI
+/search - Search your vault using keywords
 /categories - Manage categories
-/tags - Manage tags
+/addcategory - Add a new category
 /recent - Show recent messages
 /export - Export your data
 /stats - Show storage statistics
 /pdf - Convert images to PDF
-/clear - Clear conversation
+/generatepdf - Generate PDF from uploaded images
 
 Start by sending me any message, image, or document to save it to your personal vault!
 """
@@ -72,17 +71,15 @@ Start by sending me any message, image, or document to save it to your personal 
 **Saving Content:**
 • Send any message to save it
 • Send images, documents, videos, or audio files
-• Forward messages to save them
 • Use /store to manually save current conversation
 
 **Organizing Content:**
 • Use /categories to manage categories
-• Use /tags to add tags to messages
+• Use /addcategory <name> to add a category
 • Send #hashtags in messages for auto-tagging
 
 **Searching & Retrieving:**
-• Use /search to find content with keywords
-• The AI can understand natural language queries
+• Use /search <query> to find content
 • Use /recent to see recent messages
 
 **Export & Management:**
@@ -93,9 +90,6 @@ Start by sending me any message, image, or document to save it to your personal 
 **Tips:**
 • Add categories for better organization
 • Use specific tags for easy retrieval
-• You can search using natural language questions
-
-Need help? Just ask me!
 """
         await update.message.reply_text(help_text)
     
@@ -130,7 +124,6 @@ Need help? Just ask me!
         if message.photo:
             message_data["type"] = "photo"
             message_data["has_file"] = True
-            # Get the largest photo
             photo = message.photo[-1]
             message_data["file_id"] = photo.file_id
             message_data["file_size"] = photo.file_size
@@ -154,6 +147,10 @@ Need help? Just ask me!
                 "file_id": photo.file_id,
                 "extracted_text": extracted_text
             })
+            
+            # Clean up
+            if os.path.exists(file_path):
+                os.remove(file_path)
             
         elif message.document:
             message_data["type"] = "document"
@@ -191,6 +188,10 @@ Need help? Just ask me!
                 "extracted_text": message_data.get("extracted_text", ""),
                 "summary": message_data.get("summary", "")
             })
+            
+            # Clean up
+            if os.path.exists(file_path):
+                os.remove(file_path)
         
         elif message.voice:
             message_data["type"] = "voice"
@@ -246,10 +247,7 @@ Need help? Just ask me!
         else:
             await update.message.reply_text(
                 "🔍 What would you like to search for?\n\n"
-                "Send me your search query. You can use:\n"
-                "- Keywords (e.g., 'project report')\n"
-                "- Natural language (e.g., 'show me documents from last week')\n"
-                "- Specific types (e.g., 'images', 'documents', 'pdfs')\n\n"
+                "Send me your search query.\n\n"
                 "Or use /search <your query> directly."
             )
             return SEARCH
@@ -259,33 +257,21 @@ Need help? Just ask me!
         user = update.effective_user
         
         # Get all user messages
-        messages = await self.db.get_user_messages(user.id, limit=100)
+        messages = await self.db.search_messages(user.id, query)
         
         if not messages:
-            await update.message.reply_text("📭 Your vault is empty. Start saving messages first!")
-            return
-        
-        # Extract text from messages for searching
-        texts = [msg.get('content', '') for msg in messages if msg.get('content')]
-        
-        if not texts:
-            await update.message.reply_text("No text content found to search through.")
-            return
-        
-        # Perform semantic search
-        results = await self.utils.semantic_search(query, texts, top_k=10)
-        
-        if not results:
             await update.message.reply_text("🔍 No results found for your query. Try different keywords.")
             return
         
         # Format results
         response = f"🔍 *Search Results for:* {query}\n\n"
         
-        for i, result in enumerate(results[:5], 1):
-            score = result['score'] * 100
-            text = result['text'][:200] + "..." if len(result['text']) > 200 else result['text']
-            response += f"{i}. {text}\n   *Relevance:* {score:.0f}%\n\n"
+        for i, msg in enumerate(messages[:5], 1):
+            content = msg.get('content', '')[:200]
+            if len(msg.get('content', '')) > 200:
+                content += "..."
+            timestamp = msg.get('timestamp', datetime.utcnow()).strftime("%Y-%m-%d %H:%M")
+            response += f"{i}. {content}\n   📅 {timestamp}\n\n"
         
         response += "\n💡 Use /recent to see all recent messages or try a different search."
         
@@ -301,8 +287,7 @@ Need help? Just ask me!
             await update.message.reply_text(
                 "📁 No categories yet.\n\n"
                 "To add a category, use:\n"
-                "/addcategory <category_name>\n\n"
-                "You can also add categories to messages using #category in your messages."
+                "/addcategory <category_name>"
             )
             return
         
@@ -382,10 +367,6 @@ Need help? Just ask me!
             [
                 InlineKeyboardButton("📄 JSON", callback_data="export_json"),
                 InlineKeyboardButton("📝 TXT", callback_data="export_txt")
-            ],
-            [
-                InlineKeyboardButton("📊 PDF", callback_data="export_pdf"),
-                InlineKeyboardButton("📋 DOCX", callback_data="export_docx")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -396,6 +377,37 @@ Need help? Just ask me!
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
+    
+    async def handle_export_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle export format selection"""
+        query = update.callback_query
+        await query.answer()
+        
+        user = update.effective_user
+        format_type = query.data.replace('export_', '')
+        
+        # Get user data
+        data = await self.db.export_user_data(user.id, format_type)
+        
+        # Create file
+        filename = f"vault_export_{user.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{format_type}"
+        file_path = f"uploads/{filename}"
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(data)
+        
+        # Send file
+        with open(file_path, 'rb') as f:
+            await context.bot.send_document(
+                chat_id=update.effective_chat.id,
+                document=f,
+                filename=filename
+            )
+        
+        # Clean up
+        os.remove(file_path)
+        
+        await query.edit_message_text("✅ Data exported successfully!")
     
     async def pdf_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /pdf command"""
@@ -448,7 +460,7 @@ Need help? Just ask me!
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
                     document=f,
-                    filename=f"vault_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                    filename=f"pdf_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
                 )
             
             await update.message.reply_text("✅ PDF generated and saved to your vault!")
