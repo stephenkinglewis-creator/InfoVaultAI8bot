@@ -8,20 +8,15 @@ class Config:
     BOT_TOKEN = os.getenv('BOT_TOKEN')
     
     # MongoDB
-    MONGODB_URI = os.getenv('MONGODB_URI')
+    MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017')
     DB_NAME = os.getenv('DB_NAME', 'infovault_ai')
-    
-    # Redis (for caching)
-    REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379')
     
     # File Storage
     MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
     ALLOWED_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'mp4', 'mp3', 'wav', 'pdf', 'doc', 'docx', 'txt']
     
-    # AI Models
+    # OCR
     OCR_LANGUAGE = 'eng'
-    SUMMARY_MAX_LENGTH = 500
-    SUMMARY_MIN_LENGTH = 100
     
     # Security
     SESSION_EXPIRY = 3600  # 1 hour
