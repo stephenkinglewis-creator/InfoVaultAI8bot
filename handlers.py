@@ -1,64 +1,52 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes, ConversationHandler
+from telegram.ext import ContextTypes
 import os
-import asyncio
+import re
 from datetime import datetime
-import json
-from typing import Dict, Any, List
 import logging
 
 from database import Database
 from utils import Utils
-from config import Config
 
 logger = logging.getLogger(__name__)
-
-# Conversation states
-SEARCH = 1
 
 class Handlers:
     def __init__(self, db: Database, utils: Utils):
         self.db = db
         self.utils = utils
-        
+    
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
         user = update.effective_user
         
-        # Create user in database
-        await self.db.create_user(
-            user.id,
-            user.username,
-            user.first_name
-        )
+        await self.db.create_user(user.id, user.username, user.first_name)
         
         welcome_text = f"""
-🤖 Welcome to InfoVault AI, {user.first_name}!
+🤖 **Welcome to InfoVault AI, {user.first_name}!**
 
 Your personal second brain for Telegram. I'll help you store, organize, and retrieve all your important information.
 
 📚 **What I can do:**
 • Store all your messages, images, documents, and files
 • Extract text from images using OCR
-• Generate summaries of long documents
+• Generate summaries of documents
 • Convert images to PDF
-• Search your stored information using keywords
-• Organize content by categories and tags
-• Export your data in JSON or TXT format
+• Search your stored information
+• Export your data
 
 🔍 **Commands:**
 /start - Show this welcome message
 /help - Show help menu
-/search - Search your vault using keywords
+/search <query> - Search your vault
 /categories - Manage categories
-/addcategory - Add a new category
+/addcategory <name> - Add a new category
 /recent - Show recent messages
 /export - Export your data
 /stats - Show storage statistics
 /pdf - Convert images to PDF
 /generatepdf - Generate PDF from uploaded images
 
-Start by sending me any message, image, or document to save it to your personal vault!
+Start by sending me any message, image, or document to save it!
 """
         
         await update.message.reply_text(welcome_text, parse_mode='Markdown')
@@ -71,25 +59,24 @@ Start by sending me any message, image, or document to save it to your personal 
 **Saving Content:**
 • Send any message to save it
 • Send images, documents, videos, or audio files
-• Use /store to manually save current conversation
+• Use #hashtags in messages for auto-tagging
 
 **Organizing Content:**
-• Use /categories to manage categories
-• Use /addcategory <name> to add a category
-• Send #hashtags in messages for auto-tagging
+• /categories - View your categories
+• /addcategory <name> - Add a new category
 
 **Searching & Retrieving:**
-• Use /search <query> to find content
-• Use /recent to see recent messages
+• /search <query> - Find content
+• /recent - See recent messages
 
 **Export & Management:**
-• Use /export to download your data
-• Use /stats to see your storage usage
-• Use /pdf to create PDFs from images
+• /export - Download your data
+• /stats - See your storage usage
+• /pdf - Create PDFs from images
 
 **Tips:**
-• Add categories for better organization
-• Use specific tags for easy retrieval
+• Use categories and tags for better organization
+• All data is stored in memory (resets on restart)
 """
         await update.message.reply_text(help_text)
     
@@ -98,10 +85,8 @@ Start by sending me any message, image, or document to save it to your personal 
         user = update.effective_user
         message = update.message
         
-        # Ensure user exists
         await self.db.create_user(user.id, user.username, user.first_name)
         
-        # Process message based on type
         message_data = {
             "message_id": message.message_id,
             "chat_id": message.chat_id,
@@ -109,18 +94,17 @@ Start by sending me any message, image, or document to save it to your personal 
             "has_file": False
         }
         
-        # Extract text content
+        # Extract text
         if message.text:
             message_data["text"] = message.text
             
             # Check for hashtags
-            import re
             tags = re.findall(r'#(\w+)', message.text)
             if tags:
                 message_data["tags"] = tags
                 await self.db.add_tags(user.id, tags)
         
-        # Handle different types of media
+        # Handle photos
         if message.photo:
             message_data["type"] = "photo"
             message_data["has_file"] = True
@@ -128,18 +112,16 @@ Start by sending me any message, image, or document to save it to your personal 
             message_data["file_id"] = photo.file_id
             message_data["file_size"] = photo.file_size
             
-            # Download and process image
+            # Download and process
             file = await context.bot.get_file(photo.file_id)
             file_path = f"uploads/photo_{message.message_id}_{user.id}.jpg"
             await file.download_to_drive(file_path)
             
-            # Extract text using OCR
             extracted_text = await self.utils.extract_text_from_image(file_path)
             if extracted_text:
                 message_data["extracted_text"] = extracted_text
-                message_data["text"] = message_data.get("text", "") + "\n\n[OCR Extracted]:\n" + extracted_text
+                message_data["text"] = message_data.get("text", "") + "\n\n[OCR]:\n" + extracted_text
             
-            # Store file info
             await self.db.save_file(user.id, {
                 "filename": f"photo_{message.message_id}.jpg",
                 "file_type": "image",
@@ -148,10 +130,10 @@ Start by sending me any message, image, or document to save it to your personal 
                 "extracted_text": extracted_text
             })
             
-            # Clean up
             if os.path.exists(file_path):
                 os.remove(file_path)
-            
+        
+        # Handle documents
         elif message.document:
             message_data["type"] = "document"
             message_data["has_file"] = True
@@ -160,26 +142,19 @@ Start by sending me any message, image, or document to save it to your personal 
             message_data["file_size"] = doc.file_size
             message_data["filename"] = doc.file_name
             
-            # Download document
             file = await context.bot.get_file(doc.file_id)
             file_path = f"uploads/doc_{message.message_id}_{user.id}_{doc.file_name}"
             await file.download_to_drive(file_path)
             
-            # Process based on file type
             ext = os.path.splitext(doc.file_name)[1].lower()
             
             if ext == '.pdf':
-                # Extract text from PDF
                 extracted_text = await self.utils.extract_text_from_pdf(file_path)
                 if extracted_text:
                     message_data["extracted_text"] = extracted_text
-                
-                # Generate summary
-                if len(extracted_text) > 100:
-                    summary = await self.utils.generate_summary(extracted_text)
-                    message_data["summary"] = summary
+                    if len(extracted_text) > 100:
+                        message_data["summary"] = await self.utils.generate_summary(extracted_text)
             
-            # Store file info
             await self.db.save_file(user.id, {
                 "filename": doc.file_name,
                 "file_type": "document",
@@ -189,10 +164,10 @@ Start by sending me any message, image, or document to save it to your personal 
                 "summary": message_data.get("summary", "")
             })
             
-            # Clean up
             if os.path.exists(file_path):
                 os.remove(file_path)
         
+        # Handle voice
         elif message.voice:
             message_data["type"] = "voice"
             message_data["has_file"] = True
@@ -200,7 +175,6 @@ Start by sending me any message, image, or document to save it to your personal 
             message_data["file_id"] = voice.file_id
             message_data["file_size"] = voice.file_size
             
-            # Store voice note info
             await self.db.save_file(user.id, {
                 "filename": f"voice_{message.message_id}.ogg",
                 "file_type": "audio",
@@ -208,6 +182,7 @@ Start by sending me any message, image, or document to save it to your personal 
                 "file_id": voice.file_id
             })
         
+        # Handle video
         elif message.video:
             message_data["type"] = "video"
             message_data["has_file"] = True
@@ -222,78 +197,55 @@ Start by sending me any message, image, or document to save it to your personal 
                 "file_id": video.file_id
             })
         
-        # Save message to database
+        # Save message
         await self.db.save_message(user.id, message_data)
         
         # Send confirmation
-        response = "✅ Message saved to your vault!"
-        
+        response = "✅ Message saved!"
         if message_data.get("extracted_text"):
-            response += "\n\n📝 Extracted text:\n" + message_data["extracted_text"][:200] + "..."
+            response += f"\n\n📝 Extracted:\n{message_data['extracted_text'][:150]}..."
         elif message_data.get("summary"):
-            response += "\n\n📊 Summary:\n" + message_data["summary"]
+            response += f"\n\n📊 Summary:\n{message_data['summary']}"
         
         await update.message.reply_text(response)
     
     async def search(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /search command"""
         user = update.effective_user
-        
-        # If query provided in command, use it
         query = ' '.join(context.args)
         
-        if query:
-            await self.perform_search(update, context, query)
-        else:
-            await update.message.reply_text(
-                "🔍 What would you like to search for?\n\n"
-                "Send me your search query.\n\n"
-                "Or use /search <your query> directly."
-            )
-            return SEARCH
-    
-    async def perform_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
-        """Perform the actual search"""
-        user = update.effective_user
-        
-        # Get all user messages
-        messages = await self.db.search_messages(user.id, query)
-        
-        if not messages:
-            await update.message.reply_text("🔍 No results found for your query. Try different keywords.")
+        if not query:
+            await update.message.reply_text("🔍 Please provide a search query.\nExample: /search hello")
             return
         
-        # Format results
-        response = f"🔍 *Search Results for:* {query}\n\n"
+        results = await self.db.search_messages(user.id, query)
         
-        for i, msg in enumerate(messages[:5], 1):
-            content = msg.get('content', '')[:200]
-            if len(msg.get('content', '')) > 200:
+        if not results:
+            await update.message.reply_text("🔍 No results found.")
+            return
+        
+        response = f"🔍 *Results for:* {query}\n\n"
+        for i, msg in enumerate(results[:5], 1):
+            content = msg.get('content', '')[:150]
+            if len(msg.get('content', '')) > 150:
                 content += "..."
-            timestamp = msg.get('timestamp', datetime.utcnow()).strftime("%Y-%m-%d %H:%M")
+            timestamp = msg.get('timestamp', '')[:16]
             response += f"{i}. {content}\n   📅 {timestamp}\n\n"
-        
-        response += "\n💡 Use /recent to see all recent messages or try a different search."
         
         await update.message.reply_text(response, parse_mode='Markdown')
     
     async def categories(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /categories command"""
         user = update.effective_user
-        
         categories = await self.db.get_categories(user.id)
         
         if not categories:
-            await update.message.reply_text(
-                "📁 No categories yet.\n\n"
-                "To add a category, use:\n"
-                "/addcategory <category_name>"
-            )
+            await update.message.reply_text("📁 No categories yet.\nUse /addcategory <name> to add one.")
             return
         
         response = "📁 *Your Categories*\n\n"
         for cat in categories:
-            response += f"• {cat['name']}\n"
+            response += f"• {cat}\n"
         
         await update.message.reply_text(response, parse_mode='Markdown')
     
@@ -307,26 +259,23 @@ Start by sending me any message, image, or document to save it to your personal 
             return
         
         await self.db.add_category(user.id, category_name)
-        await update.message.reply_text(f"✅ Category '{category_name}' added successfully!")
+        await update.message.reply_text(f"✅ Category '{category_name}' added!")
     
     async def recent(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /recent command"""
         user = update.effective_user
-        
         messages = await self.db.get_user_messages(user.id, limit=10)
         
         if not messages:
-            await update.message.reply_text("📭 No messages in your vault yet!")
+            await update.message.reply_text("📭 No messages yet!")
             return
         
         response = "📋 *Recent Messages*\n\n"
-        
         for msg in messages:
-            timestamp = msg.get('timestamp', datetime.utcnow()).strftime("%Y-%m-%d %H:%M")
-            content = msg.get('content', '')[:100]
-            if len(msg.get('content', '')) > 100:
+            timestamp = msg.get('timestamp', '')[:16]
+            content = msg.get('content', '')[:80]
+            if len(msg.get('content', '')) > 80:
                 content += "..."
-            
             response += f"• {timestamp}: {content}\n"
         
         await update.message.reply_text(response, parse_mode='Markdown')
@@ -334,27 +283,21 @@ Start by sending me any message, image, or document to save it to your personal 
     async def stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /stats command"""
         user = update.effective_user
-        
-        # Get user stats
-        user_data = await self.db.users.find_one({"user_id": user.id})
-        
-        if not user_data:
-            await update.message.reply_text("User not found. Start by sending a message!")
-            return
+        stats = await self.db.get_user_stats(user.id)
         
         stats_text = f"""
-📊 *Your InfoVault AI Statistics*
+📊 *Your InfoVault AI Stats*
 
-👤 User: {user_data.get('first_name', 'User')}
-📝 Total Messages: {user_data.get('total_messages', 0)}
-📁 Total Files: {user_data.get('total_files', 0)}
-💾 Storage Used: {await self.utils.format_file_size(user_data.get('storage_used', 0))}
-📅 Member Since: {user_data.get('created_at', datetime.utcnow()).strftime('%Y-%m-%d')}
+📝 Total Messages: {stats['total_messages']}
+📁 Total Files: {stats['total_files']}
+💾 Storage Used: {await self.utils.format_file_size(stats['storage_used'])}
+🏷️ Categories: {stats['categories']}
+🔖 Tags: {stats['tags']}
 
-🔍 *Quick Actions:*
-• /recent - View recent messages
-• /search - Search your vault
-• /export - Export your data
+💡 Quick Actions:
+/recent - View recent messages
+/search - Search your vault
+/export - Export your data
 """
         
         await update.message.reply_text(stats_text, parse_mode='Markdown')
@@ -372,8 +315,7 @@ Start by sending me any message, image, or document to save it to your personal 
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
-            "📤 *Export Your Data*\n\n"
-            "Choose the format you want to export your data in:",
+            "📤 *Export Your Data*\n\nChoose format:",
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
@@ -386,17 +328,14 @@ Start by sending me any message, image, or document to save it to your personal 
         user = update.effective_user
         format_type = query.data.replace('export_', '')
         
-        # Get user data
         data = await self.db.export_user_data(user.id, format_type)
         
-        # Create file
         filename = f"vault_export_{user.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{format_type}"
         file_path = f"uploads/{filename}"
         
         with open(file_path, 'w', encoding='utf-8') as f:
             f.write(data)
         
-        # Send file
         with open(file_path, 'rb') as f:
             await context.bot.send_document(
                 chat_id=update.effective_chat.id,
@@ -404,38 +343,28 @@ Start by sending me any message, image, or document to save it to your personal 
                 filename=filename
             )
         
-        # Clean up
         os.remove(file_path)
-        
         await query.edit_message_text("✅ Data exported successfully!")
     
     async def pdf_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /pdf command"""
         await update.message.reply_text(
             "📄 *Image to PDF Converter*\n\n"
-            "Send me one or more images and I'll convert them to a PDF.\n\n"
-            "How to use:\n"
-            "1. Send an image or multiple images\n"
-            "2. Use /generatepdf after sending images\n"
-            "3. I'll create a PDF and send it to you\n\n"
-            "You can also use /my_pdfs to see all your generated PDFs."
+            "1. Send one or more images\n"
+            "2. Use /generatepdf to create the PDF\n\n"
+            "The PDF will be sent to you and saved in your vault."
         )
     
     async def generate_pdf(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Generate PDF from images in context"""
+        """Generate PDF from images"""
         user = update.effective_user
         
-        # Get images from context
-        if not hasattr(context.user_data, 'images'):
-            context.user_data['images'] = []
-        
-        if not context.user_data['images']:
+        if 'images' not in context.user_data or not context.user_data['images']:
             await update.message.reply_text(
-                "No images found. Send images first and use /generatepdf."
+                "No images found. Send images first, then use /generatepdf"
             )
             return
         
-        # Download and process images
         image_paths = []
         for file_id in context.user_data['images']:
             file = await context.bot.get_file(file_id)
@@ -443,11 +372,9 @@ Start by sending me any message, image, or document to save it to your personal 
             await file.download_to_drive(path)
             image_paths.append(path)
         
-        # Create PDF
         pdf_path = await self.utils.create_pdf_from_images(image_paths)
         
         if pdf_path:
-            # Save PDF info to database
             await self.db.save_pdf(user.id, {
                 "filename": f"pdf_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
                 "pdf_id": pdf_path,
@@ -455,7 +382,6 @@ Start by sending me any message, image, or document to save it to your personal 
                 "file_size": os.path.getsize(pdf_path)
             })
             
-            # Send PDF
             with open(pdf_path, 'rb') as f:
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
@@ -463,9 +389,9 @@ Start by sending me any message, image, or document to save it to your personal 
                     filename=f"pdf_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
                 )
             
-            await update.message.reply_text("✅ PDF generated and saved to your vault!")
+            await update.message.reply_text("✅ PDF generated and saved!")
             
-            # Clean up
+            # Cleanup
             context.user_data['images'] = []
             for path in image_paths:
                 if os.path.exists(path):
@@ -473,7 +399,7 @@ Start by sending me any message, image, or document to save it to your personal 
             if os.path.exists(pdf_path):
                 os.remove(pdf_path)
         else:
-            await update.message.reply_text("❌ Failed to generate PDF. Please try again.")
+            await update.message.reply_text("❌ Failed to generate PDF.")
     
     async def handle_photo_for_pdf(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle photos for PDF creation"""
@@ -484,11 +410,11 @@ Start by sending me any message, image, or document to save it to your personal 
         context.user_data['images'].append(photo.file_id)
         
         await update.message.reply_text(
-            f"✅ Image {len(context.user_data['images'])} added to PDF.\n"
-            "Send more images or use /generatepdf to create the PDF."
+            f"✅ Image {len(context.user_data['images'])} added.\n"
+            "Send more or use /generatepdf"
         )
     
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Cancel current operation"""
+        context.user_data['images'] = []
         await update.message.reply_text("Operation cancelled.")
-        return ConversationHandler.END
