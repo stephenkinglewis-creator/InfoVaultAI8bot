@@ -7,8 +7,8 @@ class Config:
     # Telegram Bot
     BOT_TOKEN = os.getenv('BOT_TOKEN')
     
-    # MongoDB
-    MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017')
+    # MongoDB - Optional, will use local storage if not provided
+    MONGODB_URI = os.getenv('MONGODB_URI')
     DB_NAME = os.getenv('DB_NAME', 'infovault_ai')
     
     # File Storage
