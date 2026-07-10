@@ -4,7 +4,7 @@ import pytesseract
 from PIL import Image
 import pdf2image
 from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import letter, A4
+from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
 import hashlib
 import asyncio
@@ -12,22 +12,13 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 import aiofiles
 import logging
-from transformers import pipeline
-import numpy as np
-from sentence_transformers import SentenceTransformer
-import faiss
 
 logger = logging.getLogger(__name__)
 
 class Utils:
     def __init__(self):
-        # Initialize AI models
-        self.summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
-        self.embeddings_model = SentenceTransformer('all-MiniLM-L6-v2')
-        self.ocr_initialized = False
-        
-        # Set Tesseract path (adjust for your system)
-        if os.name == 'nt':  # Windows
+        # Set Tesseract path if on Windows
+        if os.name == 'nt':
             pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
         
     async def extract_text_from_image(self, image_path: str) -> str:
@@ -53,25 +44,20 @@ class Utils:
             return ""
     
     async def generate_summary(self, text: str, max_length: int = 500) -> str:
-        """Generate summary of text"""
+        """Generate summary of text (simple version)"""
         if len(text) < 100:
             return text
         
-        try:
-            # Truncate text if too long
-            if len(text) > 2000:
-                text = text[:2000]
-            
-            summary = self.summarizer(
-                text,
-                max_length=min(max_length, 200),
-                min_length=30,
-                do_sample=False
-            )
-            return summary[0]['summary_text'] if summary else text
-        except Exception as e:
-            logger.error(f"Summary error: {e}")
-            return text[:max_length] + "..."
+        # Simple summarization: take first few sentences
+        sentences = text.split('.')
+        if len(sentences) <= 3:
+            return text
+        
+        summary = '. '.join(sentences[:3]) + '.'
+        if len(summary) > max_length:
+            summary = summary[:max_length] + "..."
+        
+        return summary
     
     async def create_pdf_from_images(self, image_paths: List[str], output_path: str = None) -> str:
         """Create PDF from multiple images"""
@@ -107,47 +93,6 @@ class Utils:
             logger.error(f"PDF creation error: {e}")
             return None
     
-    async def generate_embeddings(self, text: str) -> np.ndarray:
-        """Generate embeddings for text"""
-        return self.embeddings_model.encode([text])[0]
-    
-    async def semantic_search(self, query: str, texts: List[str], top_k: int = 5) -> List[Dict[str, Any]]:
-        """Perform semantic search using embeddings"""
-        if not texts:
-            return []
-        
-        # Generate query embedding
-        query_embedding = self.embeddings_model.encode([query])
-        
-        # Generate text embeddings
-        text_embeddings = self.embeddings_model.encode(texts)
-        
-        # Create FAISS index
-        dim = text_embeddings.shape[1]
-        index = faiss.IndexFlatL2(dim)
-        index.add(text_embeddings)
-        
-        # Search
-        distances, indices = index.search(query_embedding, min(top_k, len(texts)))
-        
-        results = []
-        for i, idx in enumerate(indices[0]):
-            if idx < len(texts):
-                results.append({
-                    "text": texts[idx],
-                    "score": float(1 / (1 + distances[0][i]))  # Convert distance to similarity score
-                })
-        
-        return results
-    
-    async def hash_file(self, file_path: str) -> str:
-        """Generate hash for file"""
-        sha256_hash = hashlib.sha256()
-        async with aiofiles.open(file_path, 'rb') as f:
-            for chunk in await f.read():
-                sha256_hash.update(chunk)
-        return sha256_hash.hexdigest()
-    
     async def format_file_size(self, size_bytes: int) -> str:
         """Format file size for display"""
         for unit in ['B', 'KB', 'MB', 'GB']:
@@ -156,30 +101,10 @@ class Utils:
             size_bytes /= 1024.0
         return f"{size_bytes:.1f} TB"
     
-    async def extract_file_metadata(self, file_path: str) -> Dict[str, Any]:
-        """Extract metadata from file"""
-        import os
-        from datetime import datetime
-        
-        metadata = {
-            "filename": os.path.basename(file_path),
-            "file_size": os.path.getsize(file_path),
-            "created_at": datetime.fromtimestamp(os.path.getctime(file_path)).isoformat(),
-            "modified_at": datetime.fromtimestamp(os.path.getmtime(file_path)).isoformat()
-        }
-        
-        # Extract additional metadata based on file type
-        ext = os.path.splitext(file_path)[1].lower()
-        
-        if ext in ['.jpg', '.jpeg', '.png', '.gif']:
-            try:
-                img = Image.open(file_path)
-                metadata.update({
-                    "width": img.width,
-                    "height": img.height,
-                    "format": img.format
-                })
-            except:
-                pass
-        
-        return metadata
+    async def hash_file(self, file_path: str) -> str:
+        """Generate hash for file"""
+        sha256_hash = hashlib.sha256()
+        async with aiofiles.open(file_path, 'rb') as f:
+            while chunk := await f.read(8192):
+                sha256_hash.update(chunk)
+        return sha256_hash.hexdigest()
