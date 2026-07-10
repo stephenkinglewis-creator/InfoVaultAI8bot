@@ -67,12 +67,10 @@ def main():
         # Add callback query handler
         application.add_handler(CallbackQueryHandler(handlers.handle_export_callback, pattern="export_"))
         
-        # Get bot info
-        bot_info = application.bot.get_me()
-        logger.info(f"✅ Bot is running! @{bot_info.username}")
-        logger.info(f"📊 Using in-memory storage (data resets on restart)")
+        logger.info("✅ Bot is starting...")
+        logger.info("📊 Using in-memory storage (data resets on restart)")
         
-        # Start polling
+        # Start polling (this blocks until stopped)
         application.run_polling(allowed_updates=Update.ALL_TYPES)
         
     except Exception as e:
