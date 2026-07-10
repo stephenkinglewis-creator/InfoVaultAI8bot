@@ -1,12 +1,8 @@
 from motor.motor_asyncio import AsyncIOMotorClient
-from gridfs import GridFS
-import gridfs
 import asyncio
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-import hashlib
 import json
-from bson import ObjectId
 import logging
 
 logger = logging.getLogger(__name__)
@@ -15,7 +11,6 @@ class Database:
     def __init__(self, mongo_uri: str, db_name: str):
         self.client = AsyncIOMotorClient(mongo_uri)
         self.db = self.client[db_name]
-        self.fs = gridfs.GridFS(self.client[db_name])
         
         # Collections
         self.users = self.db.users
@@ -24,16 +19,16 @@ class Database:
         self.pdfs = self.db.pdfs
         self.categories = self.db.categories
         self.tags = self.db.tags
-        self.search_history = self.db.search_history
         
     async def create_indexes(self):
         """Create necessary indexes for better performance"""
-        await self.messages.create_index([("user_id", 1), ("timestamp", -1)])
-        await self.messages.create_index([("user_id", 1), ("content", "text")])
-        await self.files.create_index([("user_id", 1), ("filename", 1)])
-        await self.files.create_index([("user_id", 1), ("file_type", 1)])
-        await self.pdfs.create_index([("user_id", 1), ("created_at", -1)])
-        await self.users.create_index("user_id", unique=True)
+        try:
+            await self.messages.create_index([("user_id", 1), ("timestamp", -1)])
+            await self.files.create_index([("user_id", 1), ("filename", 1)])
+            await self.pdfs.create_index([("user_id", 1), ("created_at", -1)])
+            await self.users.create_index("user_id", unique=True)
+        except Exception as e:
+            logger.error(f"Index creation error: {e}")
         
     async def create_user(self, user_id: int, username: str = None, first_name: str = None):
         """Create a new user if they don't exist"""
@@ -57,7 +52,6 @@ class Database:
             return user_data
         return user
     
-    # Message Operations
     async def save_message(self, user_id: int, message_data: Dict[str, Any]):
         """Save a message to the database"""
         message = {
@@ -92,22 +86,29 @@ class Database:
     
     async def search_messages(self, user_id: int, query: str, limit: int = 20):
         """Search messages using text search"""
-        cursor = self.messages.find(
-            {"user_id": user_id, "$text": {"$search": query}}
-        ).sort("timestamp", -1).limit(limit)
-        messages = await cursor.to_list(length=limit)
-        return messages
+        try:
+            cursor = self.messages.find(
+                {"user_id": user_id, "$text": {"$search": query}}
+            ).sort("timestamp", -1).limit(limit)
+            messages = await cursor.to_list(length=limit)
+            return messages
+        except:
+            # If text search fails, fallback to simple search
+            cursor = self.messages.find({
+                "user_id": user_id,
+                "content": {"$regex": query, "$options": "i"}
+            }).sort("timestamp", -1).limit(limit)
+            messages = await cursor.to_list(length=limit)
+            return messages
     
-    # File Operations
     async def save_file(self, user_id: int, file_data: Dict[str, Any]):
         """Save file information"""
         file = {
             "user_id": user_id,
             "filename": file_data.get('filename'),
             "file_type": file_data.get('file_type'),
-            "file_size": file_data.get('file_size'),
+            "file_size": file_data.get('file_size', 0),
             "file_id": file_data.get('file_id'),
-            "thumbnail_id": file_data.get('thumbnail_id'),
             "uploaded_at": datetime.utcnow(),
             "metadata": file_data.get('metadata', {}),
             "category": file_data.get('category', 'general'),
@@ -135,7 +136,6 @@ class Database:
         files = await cursor.to_list(length=limit)
         return files
     
-    # PDF Operations
     async def save_pdf(self, user_id: int, pdf_data: Dict[str, Any]):
         """Save PDF information"""
         pdf = {
@@ -152,7 +152,6 @@ class Database:
         result = await self.pdfs.insert_one(pdf)
         return result
     
-    # Category Operations
     async def add_category(self, user_id: int, category_name: str):
         """Add a category for a user"""
         category = {
@@ -173,7 +172,6 @@ class Database:
         categories = await cursor.to_list(length=None)
         return categories
     
-    # Tag Operations
     async def add_tags(self, user_id: int, tags: List[str]):
         """Add tags for a user"""
         for tag in tags:
@@ -188,7 +186,6 @@ class Database:
                 upsert=True
             )
     
-    # Export Operations
     async def export_user_data(self, user_id: int, format: str = 'json'):
         """Export all user data"""
         messages = await self.get_user_messages(user_id, limit=1000)
