@@ -1,31 +1,26 @@
 import os
-import io
 import pytesseract
 from PIL import Image
 import pdf2image
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.utils import ImageReader
-import hashlib
-import asyncio
 from datetime import datetime
-from typing import List, Dict, Any, Optional
-import aiofiles
+from typing import List
 import logging
 
 logger = logging.getLogger(__name__)
 
 class Utils:
     def __init__(self):
-        # Set Tesseract path if on Windows
+        # Set Tesseract path for Windows
         if os.name == 'nt':
             pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-        
+    
     async def extract_text_from_image(self, image_path: str) -> str:
         """Extract text from image using OCR"""
         try:
             image = Image.open(image_path)
-            text = pytesseract.image_to_string(image, lang='eng')
+            text = pytesseract.image_to_string(image)
             return text.strip()
         except Exception as e:
             logger.error(f"OCR Error: {e}")
@@ -44,7 +39,7 @@ class Utils:
             return ""
     
     async def generate_summary(self, text: str, max_length: int = 500) -> str:
-        """Generate summary of text (simple version)"""
+        """Simple summary generation"""
         if len(text) < 100:
             return text
         
@@ -71,7 +66,6 @@ class Utils:
                 img = Image.open(img_path)
                 width, height = img.size
                 
-                # Calculate dimensions to fit on A4
                 max_width = 595.28  # A4 width in points
                 max_height = 841.89  # A4 height in points
                 
@@ -80,7 +74,6 @@ class Utils:
                     width = width * scale
                     height = height * scale
                 
-                # Center image on page
                 x = (max_width - width) / 2
                 y = (max_height - height) / 2
                 
@@ -94,17 +87,9 @@ class Utils:
             return None
     
     async def format_file_size(self, size_bytes: int) -> str:
-        """Format file size for display"""
+        """Format file size"""
         for unit in ['B', 'KB', 'MB', 'GB']:
             if size_bytes < 1024.0:
                 return f"{size_bytes:.1f} {unit}"
             size_bytes /= 1024.0
         return f"{size_bytes:.1f} TB"
-    
-    async def hash_file(self, file_path: str) -> str:
-        """Generate hash for file"""
-        sha256_hash = hashlib.sha256()
-        async with aiofiles.open(file_path, 'rb') as f:
-            while chunk := await f.read(8192):
-                sha256_hash.update(chunk)
-        return sha256_hash.hexdigest()
