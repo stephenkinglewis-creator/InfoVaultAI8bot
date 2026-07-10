@@ -1,35 +1,167 @@
-from motor.motor_asyncio import AsyncIOMotorClient
 import asyncio
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 import json
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
 class Database:
-    def __init__(self, mongo_uri: str, db_name: str):
-        self.client = AsyncIOMotorClient(mongo_uri)
-        self.db = self.client[db_name]
+    def __init__(self, mongo_uri: str = None, db_name: str = None):
+        """Initialize database - works with or without MongoDB"""
+        self.mongo_uri = mongo_uri
+        self.db_name = db_name
+        self.client = None
+        self.db = None
+        self.connected = False
         
-        # Collections
-        self.users = self.db.users
-        self.messages = self.db.messages
-        self.files = self.db.files
-        self.pdfs = self.db.pdfs
-        self.categories = self.db.categories
-        self.tags = self.db.tags
+        # Collections (will be None if not connected)
+        self.users = None
+        self.messages = None
+        self.files = None
+        self.pdfs = None
+        self.categories = None
+        self.tags = None
         
+        # Local storage as fallback
+        self.local_storage = {}
+        
+        # Try to connect to MongoDB if URI is provided
+        if mongo_uri and mongo_uri != "mongodb://localhost:27017" and not mongo_uri.startswith("mongodb+srv://cluster"):
+            try:
+                from motor.motor_asyncio import AsyncIOMotorClient
+                self.client = AsyncIOMotorClient(mongo_uri, serverSelectionTimeoutMS=5000)
+                self.db = self.client[db_name or 'infovault_ai']
+                
+                # Test connection
+                import asyncio
+                loop = asyncio.get_event_loop()
+                loop.run_until_complete(self.client.admin.command('ping'))
+                
+                self.connected = True
+                self.users = self.db.users
+                self.messages = self.db.messages
+                self.files = self.db.files
+                self.pdfs = self.db.pdfs
+                self.categories = self.db.categories
+                self.tags = self.db.tags
+                
+                logger.info("✅ Connected to MongoDB successfully!")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not connect to MongoDB: {e}")
+                logger.info("💡 Using local storage instead")
+                self.connected = False
+                self._init_local_storage()
+        else:
+            logger.info("💡 No valid MongoDB URI provided, using local storage")
+            self._init_local_storage()
+    
+    def _init_local_storage(self):
+        """Initialize local storage"""
+        self.local_storage = {
+            'users': {},
+            'messages': {},
+            'files': {},
+            'pdfs': {},
+            'categories': {},
+            'tags': {}
+        }
+        self.connected = False
+        
+        # Create in-memory collections
+        class LocalCollection:
+            def __init__(self, storage_dict):
+                self.storage = storage_dict
+                self.counter = 0
+            
+            async def insert_one(self, data):
+                self.counter += 1
+                data['_id'] = self.counter
+                if 'user_id' in data:
+                    user_id = data['user_id']
+                    if user_id not in self.storage:
+                        self.storage[user_id] = []
+                    self.storage[user_id].append(data)
+                return data
+            
+            async def find_one(self, query):
+                for user_id, items in self.storage.items():
+                    for item in items:
+                        match = True
+                        for key, value in query.items():
+                            if item.get(key) != value:
+                                match = False
+                                break
+                        if match:
+                            return item
+                return None
+            
+            async def find(self, query):
+                results = []
+                for user_id, items in self.storage.items():
+                    for item in items:
+                        match = True
+                        for key, value in query.items():
+                            if key == 'user_id':
+                                if item.get(key) != value:
+                                    match = False
+                                    break
+                            elif key.startswith('$'):
+                                # Skip special operators for now
+                                pass
+                            elif item.get(key) != value:
+                                match = False
+                                break
+                        if match:
+                            results.append(item)
+                return results
+            
+            async def update_one(self, query, update_data, upsert=False):
+                # Simple update implementation
+                result = await self.find_one(query)
+                if result:
+                    for key, value in update_data.items():
+                        if key == '$inc':
+                            for inc_key, inc_value in value.items():
+                                result[inc_key] = result.get(inc_key, 0) + inc_value
+                        elif key == '$set':
+                            for set_key, set_value in value.items():
+                                result[set_key] = set_value
+                return result
+            
+            async def to_list(self, length=None):
+                results = []
+                for user_id, items in self.storage.items():
+                    results.extend(items)
+                return results[:length] if length else results
+            
+            async def distinct(self, field):
+                values = set()
+                for user_id, items in self.storage.items():
+                    for item in items:
+                        if field in item:
+                            values.add(item[field])
+                return list(values)
+        
+        self.users = LocalCollection(self.local_storage['users'])
+        self.messages = LocalCollection(self.local_storage['messages'])
+        self.files = LocalCollection(self.local_storage['files'])
+        self.pdfs = LocalCollection(self.local_storage['pdfs'])
+        self.categories = LocalCollection(self.local_storage['categories'])
+        self.tags = LocalCollection(self.local_storage['tags'])
+    
     async def create_indexes(self):
-        """Create necessary indexes for better performance"""
-        try:
-            await self.messages.create_index([("user_id", 1), ("timestamp", -1)])
-            await self.files.create_index([("user_id", 1), ("filename", 1)])
-            await self.pdfs.create_index([("user_id", 1), ("created_at", -1)])
-            await self.users.create_index("user_id", unique=True)
-        except Exception as e:
-            logger.error(f"Index creation error: {e}")
-        
+        """Create indexes if using MongoDB"""
+        if self.connected:
+            try:
+                await self.messages.create_index([("user_id", 1), ("timestamp", -1)])
+                await self.files.create_index([("user_id", 1), ("filename", 1)])
+                await self.pdfs.create_index([("user_id", 1), ("created_at", -1)])
+                await self.users.create_index("user_id", unique=True)
+            except Exception as e:
+                logger.error(f"Index creation error: {e}")
+    
     async def create_user(self, user_id: int, username: str = None, first_name: str = None):
         """Create a new user if they don't exist"""
         user = await self.users.find_one({"user_id": user_id})
@@ -80,26 +212,22 @@ class Database:
     
     async def get_user_messages(self, user_id: int, limit: int = 50, skip: int = 0):
         """Get messages for a user with pagination"""
-        cursor = self.messages.find({"user_id": user_id}).sort("timestamp", -1).skip(skip).limit(limit)
-        messages = await cursor.to_list(length=limit)
-        return messages
+        messages = await self.messages.find({"user_id": user_id})
+        # Sort by timestamp descending
+        messages.sort(key=lambda x: x.get('timestamp', datetime.min), reverse=True)
+        return messages[skip:skip+limit]
     
     async def search_messages(self, user_id: int, query: str, limit: int = 20):
         """Search messages using text search"""
-        try:
-            cursor = self.messages.find(
-                {"user_id": user_id, "$text": {"$search": query}}
-            ).sort("timestamp", -1).limit(limit)
-            messages = await cursor.to_list(length=limit)
-            return messages
-        except:
-            # If text search fails, fallback to simple search
-            cursor = self.messages.find({
-                "user_id": user_id,
-                "content": {"$regex": query, "$options": "i"}
-            }).sort("timestamp", -1).limit(limit)
-            messages = await cursor.to_list(length=limit)
-            return messages
+        messages = await self.messages.find({"user_id": user_id})
+        # Simple text search
+        results = []
+        query_lower = query.lower()
+        for msg in messages:
+            content = msg.get('content', '').lower()
+            if query_lower in content:
+                results.append(msg)
+        return results[:limit]
     
     async def save_file(self, user_id: int, file_data: Dict[str, Any]):
         """Save file information"""
@@ -131,10 +259,9 @@ class Database:
         query = {"user_id": user_id}
         if file_type:
             query["file_type"] = file_type
-        
-        cursor = self.files.find(query).sort("uploaded_at", -1).limit(limit)
-        files = await cursor.to_list(length=limit)
-        return files
+        files = await self.files.find(query)
+        files.sort(key=lambda x: x.get('uploaded_at', datetime.min), reverse=True)
+        return files[:limit]
     
     async def save_pdf(self, user_id: int, pdf_data: Dict[str, Any]):
         """Save PDF information"""
@@ -168,8 +295,7 @@ class Database:
     
     async def get_categories(self, user_id: int):
         """Get all categories for a user"""
-        cursor = self.categories.find({"user_id": user_id})
-        categories = await cursor.to_list(length=None)
+        categories = await self.categories.find({"user_id": user_id})
         return categories
     
     async def add_tags(self, user_id: int, tags: List[str]):
